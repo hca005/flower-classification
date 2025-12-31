@@ -34,3 +34,6 @@ models/
 *.zip
 *.tar
 *.tar.gz
+
+/train/
+/val/
