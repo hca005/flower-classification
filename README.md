@@ -6,10 +6,6 @@ Repo này xây pipeline tối thiểu cho bài Flower Classification:
 - Dataset + transforms + DataLoader (sanity check batch)
 - (Tuỳ chọn) train model + vẽ loss/acc curves
 
-> Lưu ý: Dataset **KHÔNG** push lên GitHub (nặng). Repo chỉ push code + splits CSV.
-> `data/raw/...` nên được ignore bằng `.gitignore`.
-
----
 
 ## 0) Project Structure
 flower-classification/
@@ -53,3 +49,4 @@ Tại root repo:
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+
