@@ -1,136 +1,149 @@
+# src/train.py
+# -----------------------
+# Main training script
+# -----------------------
+
+import sys
+import os
+
+# -----------------------
+# Fix ModuleNotFoundError: thêm folder src vào sys.path
+# Khi chạy "python src/train.py", Python tìm module từ root folder
+# sys.path.insert(0, ...) đảm bảo engine.py, dataset.py, transforms.py được tìm thấy
+# -----------------------
+sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
+
 import argparse
-from pathlib import Path
-import time
-import csv
+import pandas as pd
+import matplotlib.pyplot as plt
 
 import torch
 import torch.nn as nn
+import torch.optim as optim
 from torch.utils.data import DataLoader
+import torch.nn.functional as F
 
-from src.dataset import CSVDataset
-from src.transforms import get_transforms
-from src.utils.seed import seed_everything
+# -----------------------
+# Import modules trong src/
+# -----------------------
+from engine import train_one_epoch, validate, save_checkpoint
+from dataset import CSVDataset
+from transforms import get_transforms
+from utils.seed_everything import seed_everything
 
-def accuracy(logits, y):
-    preds = logits.argmax(dim=1)
-    return (preds == y).float().mean().item()
+# -----------------------
+# ARGUMENTS
+# -----------------------
+parser = argparse.ArgumentParser()
+parser.add_argument("--model_name", type=str, default="cnn_baseline")
+parser.add_argument("--epochs", type=int, default=2)
+parser.add_argument("--batch_size", type=int, default=16)
+parser.add_argument("--lr", type=float, default=3e-4)
+parser.add_argument("--img_size", type=int, default=224)
+parser.add_argument("--data_dir", type=str, default="../data")
+parser.add_argument("--output_dir", type=str, default="../outputs")
+parser.add_argument("--model_dir", type=str, default="../models")
+args = parser.parse_args()
 
-def get_model(model_key: str, num_classes: int, freeze_backbone: bool, vit_name: str):
-    if model_key == "cnn_baseline":
-        from src.models.cnn_baseline import build
-        return build(num_classes)
-    if model_key == "cnn_transfer":
-        from src.models.cnn_transfer import build
-        return build(num_classes, freeze_backbone=freeze_backbone)
-    if model_key == "vit":
-        from src.models.vit import build
-        return build(num_classes, model_name=vit_name, pretrained=True)
-    raise ValueError(f"Unknown model: {model_key}")
+# -----------------------
+# Set seed
+# -----------------------
+seed_everything(42)
 
-@torch.no_grad()
-def evaluate(model, loader, device, criterion):
-    model.eval()
-    total_loss = 0.0
-    total_acc = 0.0
-    n = 0
-    for x, y in loader:
-        x, y = x.to(device), y.to(device)
-        logits = model(x)
-        loss = criterion(logits, y)
-        bs = x.size(0)
-        total_loss += loss.item() * bs
-        total_acc += accuracy(logits, y) * bs
-        n += bs
-    return total_loss / n, total_acc / n
+# -----------------------
+# Device
+# -----------------------
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print("Using device:", device)
 
-def train_one_epoch(model, loader, device, optimizer, criterion):
-    model.train()
-    total_loss = 0.0
-    total_acc = 0.0
-    n = 0
-    for x, y in loader:
-        x, y = x.to(device), y.to(device)
-        optimizer.zero_grad()
-        logits = model(x)
-        loss = criterion(logits, y)
-        loss.backward()
-        optimizer.step()
+# -----------------------
+# Dataset + Dataloader
+# -----------------------
+train_tf, val_tf = get_transforms(img_size=args.img_size)
 
-        bs = x.size(0)
-        total_loss += loss.item() * bs
-        total_acc += accuracy(logits, y) * bs
-        n += bs
-    return total_loss / n, total_acc / n
+train_dataset = CSVDataset(os.path.join(args.data_dir, "train.csv"), transform=train_tf)
+val_dataset = CSVDataset(os.path.join(args.data_dir, "val.csv"), transform=val_tf,
+                         label_to_idx=train_dataset.label_to_idx)
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--model", type=str, default="cnn_baseline",
-                    choices=["cnn_baseline", "cnn_transfer", "vit"])
-    ap.add_argument("--epochs", type=int, default=5)
-    ap.add_argument("--batch_size", type=int, default=16)
-    ap.add_argument("--lr", type=float, default=3e-4)
-    ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--img_size", type=int, default=224)
-    ap.add_argument("--freeze_backbone", action="store_true")
-    ap.add_argument("--vit_name", type=str, default="vit_base_patch16_224")
-    args = ap.parse_args()
+train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
 
-    seed_everything(args.seed)
+num_classes = len(train_dataset.label_to_idx)
+print(f"Num classes: {num_classes}")
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+# -----------------------
+# Simple CNN model
+# -----------------------
+class SimpleCNN(nn.Module):
+    def __init__(self, num_classes):
+        super().__init__()
+        self.conv1 = nn.Conv2d(3, 32, 3, padding=1)
+        self.pool = nn.MaxPool2d(2,2)
+        self.conv2 = nn.Conv2d(32, 64, 3, padding=1)
+        self.fc1 = nn.Linear(64*56*56, 128)
+        self.fc2 = nn.Linear(128, num_classes)
 
-    train_tf, eval_tf = get_transforms(img_size=args.img_size)
-    train_ds = CSVDataset("splits/train.csv", transform=train_tf)
-    val_ds = CSVDataset("splits/val.csv", transform=eval_tf, label_to_idx=train_ds.label_to_idx)
+    def forward(self, x):
+        x = self.pool(F.relu(self.conv1(x)))
+        x = self.pool(F.relu(self.conv2(x)))
+        x = x.view(x.size(0), -1)
+        x = F.relu(self.fc1(x))
+        x = self.fc2(x)
+        return x
 
-    num_classes = len(train_ds.label_to_idx)
+model = SimpleCNN(num_classes=num_classes).to(device)
 
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
+# -----------------------
+# Optimizer + Loss
+# -----------------------
+optimizer = optim.Adam(model.parameters(), lr=args.lr)
+criterion = nn.CrossEntropyLoss()
 
-    model = get_model(args.model, num_classes, args.freeze_backbone, args.vit_name).to(device)
+# -----------------------
+# Output paths
+# -----------------------
+model_path = os.path.join(args.model_dir, args.model_name)
+os.makedirs(model_path, exist_ok=True)
+output_path = os.path.join(args.output_dir, args.model_name)
+os.makedirs(output_path, exist_ok=True)
 
-    criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)
+# -----------------------
+# Training loop
+# -----------------------
+best_acc = 0.0
+history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []}
 
-    # output dirs
-    model_dir = Path("models") / args.model
-    out_dir = Path("outputs") / args.model
-    model_dir.mkdir(parents=True, exist_ok=True)
-    out_dir.mkdir(parents=True, exist_ok=True)
+for epoch in range(1, args.epochs+1):
+    print(f"\nEpoch {epoch}/{args.epochs}")
+    train_loss, train_acc = train_one_epoch(model, train_loader, optimizer, criterion, device)
+    val_loss, val_acc = validate(model, val_loader, criterion, device)
 
-    history_path = out_dir / "history.csv"
-    best_path = model_dir / "best.pt"
-    best_val_acc = -1.0
+    print(f"Train Loss: {train_loss:.4f}, Acc: {train_acc:.4f} | Val Loss: {val_loss:.4f}, Acc: {val_acc:.4f}")
 
-    with open(history_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(["epoch", "train_loss", "train_acc", "val_loss", "val_acc", "seconds"])
+    history["train_loss"].append(train_loss)
+    history["train_acc"].append(train_acc)
+    history["val_loss"].append(val_loss)
+    history["val_acc"].append(val_acc)
 
-        for epoch in range(1, args.epochs + 1):
-            t0 = time.time()
+    # Save best checkpoint
+    if val_acc > best_acc:
+        best_acc = val_acc
+        save_checkpoint(model, optimizer, epoch, os.path.join(model_path, "best.pt"))
 
-            tr_loss, tr_acc = train_one_epoch(model, train_loader, device, optimizer, criterion)
-            va_loss, va_acc = evaluate(model, val_loader, device, criterion)
+# -----------------------
+# Save history + plot curves
+# -----------------------
+df = pd.DataFrame(history)
+df.to_csv(os.path.join(output_path, "history.csv"), index=False)
 
-            sec = time.time() - t0
-            writer.writerow([epoch, tr_loss, tr_acc, va_loss, va_acc, sec])
-            f.flush()
+plt.figure(figsize=(8,4))
+plt.plot(history["train_loss"], label="train_loss")
+plt.plot(history["val_loss"], label="val_loss")
+plt.plot(history["train_acc"], label="train_acc")
+plt.plot(history["val_acc"], label="val_acc")
+plt.legend()
+plt.title(f"{args.model_name} Training Curves")
+plt.savefig(os.path.join(output_path, "curves.png"))
+plt.close()
 
-            print(f"[{args.model}] epoch {epoch}/{args.epochs} | "
-                  f"train loss {tr_loss:.4f} acc {tr_acc:.4f} | "
-                  f"val loss {va_loss:.4f} acc {va_acc:.4f} | {sec:.1f}s")
-
-            if va_acc > best_val_acc:
-                best_val_acc = va_acc
-                torch.save(
-                    {"model": args.model, "state_dict": model.state_dict(),
-                     "label_to_idx": train_ds.label_to_idx, "img_size": args.img_size},
-                    best_path
-                )
-                print(f"✅ Saved best to {best_path} (val_acc={best_val_acc:.4f})")
-
-    print("Done. Best val acc:", best_val_acc)
-
-if __name__ == "__main__":
-    main()
+print("\nTraining done. Best Val Acc:", best_acc)
