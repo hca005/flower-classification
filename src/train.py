@@ -29,7 +29,8 @@ import torch.nn.functional as F
 from engine import train_one_epoch, validate, save_checkpoint
 from dataset import CSVDataset
 from transforms import get_transforms
-from utils.seed_everything import seed_everything
+from utils.seed import seed_everything
+
 
 # -----------------------
 # ARGUMENTS
@@ -40,7 +41,7 @@ parser.add_argument("--epochs", type=int, default=2)
 parser.add_argument("--batch_size", type=int, default=16)
 parser.add_argument("--lr", type=float, default=3e-4)
 parser.add_argument("--img_size", type=int, default=224)
-parser.add_argument("--data_dir", type=str, default="../data")
+parser.add_argument("--data_dir", type=str, default="splits")
 parser.add_argument("--output_dir", type=str, default="../outputs")
 parser.add_argument("--model_dir", type=str, default="../models")
 args = parser.parse_args()
