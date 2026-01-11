@@ -1,63 +1,105 @@
 # src/engine.py
-# -----------------------
-# Engine file: train, validate, save model
-# -----------------------
+from __future__ import annotations
 
+from typing import Tuple
 import torch
-import os
 
-def train_one_epoch(model, dataloader, optimizer, criterion, device):
-    """Train model for one epoch"""
+
+@torch.no_grad()
+def _accuracy_from_logits(logits: torch.Tensor, targets: torch.Tensor) -> float:
+    preds = logits.argmax(dim=1)
+    correct = (preds == targets).sum().item()
+    total = targets.numel()
+    return correct / max(total, 1)
+
+
+def train_one_epoch(
+    model: torch.nn.Module,
+    loader: torch.utils.data.DataLoader,
+    optimizer: torch.optim.Optimizer,
+    criterion: torch.nn.Module,
+    device: torch.device,
+) -> Tuple[float, float]:
+    """
+    Returns:
+        avg_loss, avg_acc
+    """
     model.train()
-    running_loss = 0.0
-    correct = 0
-    total = 0
 
-    for imgs, labels in dataloader:
-        imgs, labels = imgs.to(device), labels.to(device)
+    total_loss = 0.0
+    total_correct = 0
+    total_samples = 0
 
-        optimizer.zero_grad()
-        outputs = model(imgs)
-        loss = criterion(outputs, labels)
+    for batch in loader:
+        # Expect dataset returns (images, labels)
+        images, labels = batch
+        images = images.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
+
+        optimizer.zero_grad(set_to_none=True)
+
+        logits = model(images)
+        loss = criterion(logits, labels)
         loss.backward()
         optimizer.step()
 
-        running_loss += loss.item() * imgs.size(0)
-        _, preds = torch.max(outputs, 1)
-        correct += (preds == labels).sum().item()
-        total += labels.size(0)
+        bs = labels.size(0)
+        total_loss += loss.item() * bs
+        total_correct += (logits.argmax(dim=1) == labels).sum().item()
+        total_samples += bs
 
-    epoch_loss = running_loss / total
-    epoch_acc = correct / total
-    return epoch_loss, epoch_acc
+    avg_loss = total_loss / max(total_samples, 1)
+    avg_acc = total_correct / max(total_samples, 1)
+    return avg_loss, avg_acc
 
-def validate(model, dataloader, criterion, device):
-    """Evaluate model on validation set"""
+
+@torch.no_grad()
+def validate(
+    model: torch.nn.Module,
+    loader: torch.utils.data.DataLoader,
+    criterion: torch.nn.Module,
+    device: torch.device,
+) -> Tuple[float, float]:
+    """
+    Returns:
+        avg_loss, avg_acc
+    """
     model.eval()
-    running_loss = 0.0
-    correct = 0
-    total = 0
 
-    with torch.no_grad():
-        for imgs, labels in dataloader:
-            imgs, labels = imgs.to(device), labels.to(device)
-            outputs = model(imgs)
-            loss = criterion(outputs, labels)
+    total_loss = 0.0
+    total_correct = 0
+    total_samples = 0
 
-            running_loss += loss.item() * imgs.size(0)
-            _, preds = torch.max(outputs, 1)
-            correct += (preds == labels).sum().item()
-            total += labels.size(0)
+    for batch in loader:
+        images, labels = batch
+        images = images.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
 
-    epoch_loss = running_loss / total
-    epoch_acc = correct / total
-    return epoch_loss, epoch_acc
+        logits = model(images)
+        loss = criterion(logits, labels)
 
-def save_checkpoint(model, optimizer, epoch, path):
-    """Save model checkpoint"""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    torch.save({
+        bs = labels.size(0)
+        total_loss += loss.item() * bs
+        total_correct += (logits.argmax(dim=1) == labels).sum().item()
+        total_samples += bs
+
+    avg_loss = total_loss / max(total_samples, 1)
+    avg_acc = total_correct / max(total_samples, 1)
+    return avg_loss, avg_acc
+
+
+def save_checkpoint(
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    epoch: int,
+    path: str,
+) -> None:
+    """
+    Save best checkpoint to: models/<model_name>/best.pt
+    """
+    ckpt = {
         "epoch": epoch,
         "model_state_dict": model.state_dict(),
-        "optimizer_state_dict": optimizer.state_dict()
-    }, path)
+        "optimizer_state_dict": optimizer.state_dict(),
+    }
+    torch.save(ckpt, path)
