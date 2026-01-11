@@ -1,67 +1,95 @@
 # src/engine.py
 from __future__ import annotations
-from typing import Tuple, Dict
+
+from typing import Dict, Tuple, Optional
 import torch
-from tqdm import tqdm
 
 
-def _to_device(batch, device):
-    x, y = batch
-    return x.to(device, non_blocking=True), y.to(device, non_blocking=True)
+def _unpack_batch(batch):
+    """
+    Expect DataLoader yields (images, labels).
+    If your dataset returns dict, adjust here.
+    """
+    if isinstance(batch, (list, tuple)) and len(batch) >= 2:
+        return batch[0], batch[1]
+    raise ValueError("Unsupported batch format. Expected (images, labels).")
 
 
-def train_one_epoch(model, loader, optimizer, criterion, device, use_amp: bool = True) -> Tuple[float, float]:
+def train_one_epoch(
+    model: torch.nn.Module,
+    loader: torch.utils.data.DataLoader,
+    optimizer: torch.optim.Optimizer,
+    criterion: torch.nn.Module,
+    device: torch.device,
+) -> Tuple[float, float]:
     model.train()
-    total_loss, total_correct, total_samples = 0.0, 0, 0
 
-    scaler = torch.cuda.amp.GradScaler(enabled=(use_amp and device.type == "cuda"))
+    total_loss = 0.0
+    total_correct = 0
+    total_samples = 0
 
-    pbar = tqdm(loader, desc="Train", leave=False)
-    for batch in pbar:
-        x, y = _to_device(batch, device)
+    for batch in loader:
+        images, labels = _unpack_batch(batch)
+        images = images.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
 
         optimizer.zero_grad(set_to_none=True)
 
-        with torch.cuda.amp.autocast(enabled=(use_amp and device.type == "cuda")):
-            logits = model(x)
-            loss = criterion(logits, y)
+        logits = model(images)
+        loss = criterion(logits, labels)
 
-        scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
+        loss.backward()
+        optimizer.step()
 
-        bs = y.size(0)
+        bs = labels.size(0)
         total_loss += loss.item() * bs
-        total_correct += (logits.argmax(dim=1) == y).sum().item()
+        total_correct += (logits.argmax(dim=1) == labels).sum().item()
         total_samples += bs
 
-        pbar.set_postfix(loss=loss.item())
-
-    return total_loss / total_samples, total_correct / total_samples
+    avg_loss = total_loss / max(total_samples, 1)
+    avg_acc = total_correct / max(total_samples, 1)
+    return avg_loss, avg_acc
 
 
 @torch.no_grad()
-def validate(model, loader, criterion, device) -> Tuple[float, float]:
+def validate(
+    model: torch.nn.Module,
+    loader: torch.utils.data.DataLoader,
+    criterion: torch.nn.Module,
+    device: torch.device,
+) -> Tuple[float, float]:
     model.eval()
-    total_loss, total_correct, total_samples = 0.0, 0, 0
 
-    pbar = tqdm(loader, desc="Val", leave=False)
-    for batch in pbar:
-        x, y = _to_device(batch, device)
-        logits = model(x)
-        loss = criterion(logits, y)
+    total_loss = 0.0
+    total_correct = 0
+    total_samples = 0
 
-        bs = y.size(0)
+    for batch in loader:
+        images, labels = _unpack_batch(batch)
+        images = images.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
+
+        logits = model(images)
+        loss = criterion(logits, labels)
+
+        bs = labels.size(0)
         total_loss += loss.item() * bs
-        total_correct += (logits.argmax(dim=1) == y).sum().item()
+        total_correct += (logits.argmax(dim=1) == labels).sum().item()
         total_samples += bs
 
-        pbar.set_postfix(loss=loss.item())
+    avg_loss = total_loss / max(total_samples, 1)
+    avg_acc = total_correct / max(total_samples, 1)
+    return avg_loss, avg_acc
 
-    return total_loss / total_samples, total_correct / total_samples
 
-
-def save_checkpoint(model, optimizer, epoch: int, best_acc: float, path: str, extra: Dict | None = None):
+def save_checkpoint(
+    path: str,
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    epoch: int,
+    best_acc: float,
+    extra: Optional[Dict] = None,
+) -> None:
     ckpt = {
         "epoch": epoch,
         "best_acc": best_acc,
@@ -70,4 +98,5 @@ def save_checkpoint(model, optimizer, epoch: int, best_acc: float, path: str, ex
     }
     if extra:
         ckpt.update(extra)
+
     torch.save(ckpt, path)
