@@ -120,4 +120,142 @@ def build_model(args, num_classes: int) -> nn.Module:
 
         return m
 
-    if args.model ==
+    if args.model == "vit":
+        import timm
+        m = timm.create_model(args.vit_name, pretrained=True, num_classes=num_classes)
+        return m
+
+    raise ValueError(f"Unknown model: {args.model}")
+
+
+def main():
+    args = parse_args()
+
+    # Alias: if --model_name provided, override --model
+    if args.model_name:
+        args.model = args.model_name
+
+    # Seed
+    seed_everything(args.seed)
+
+    # Device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print("Using device:", device)
+
+    repo_root = Path.cwd()
+
+    # Output paths per model name (SHEET REQUIREMENT)
+    model_out_dir = (repo_root / args.model_dir / args.model).resolve()
+    run_out_dir = (repo_root / args.output_dir / args.model).resolve()
+    model_out_dir.mkdir(parents=True, exist_ok=True)
+    run_out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save args for demo/repro
+    (run_out_dir / "run_args.json").write_text(
+        json.dumps(vars(args), indent=2, ensure_ascii=False),
+        encoding="utf-8"
+    )
+
+    # Data
+    splits_dir = (repo_root / args.splits_dir).resolve()
+    train_csv = splits_dir / "train.csv"
+    val_csv = splits_dir / "val.csv"
+
+    if not train_csv.exists() or not val_csv.exists():
+        raise FileNotFoundError(
+            f"Missing splits CSVs.\nExpected:\n- {train_csv}\n- {val_csv}\n"
+            f"Hint: generate with split_data.py into folder '{args.splits_dir}'."
+        )
+
+    train_tf, val_tf = get_transforms(img_size=args.img_size)
+
+    train_ds = CSVDataset(str(train_csv), transform=train_tf)
+    val_ds = CSVDataset(str(val_csv), transform=val_tf, label_to_idx=train_ds.label_to_idx)
+
+    num_classes = len(train_ds.label_to_idx)
+    print("Num classes:", num_classes)
+
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+        pin_memory=(device.type == "cuda"),
+    )
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=(device.type == "cuda"),
+    )
+
+    # Model
+    model = build_model(args, num_classes=num_classes).to(device)
+
+    # Optimizer: only trainable params (important for freeze_backbone)
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    optimizer = optim.Adam(trainable_params, lr=args.lr)
+    criterion = nn.CrossEntropyLoss()
+
+    # Train loop
+    best_acc = 0.0
+    history = {"epoch": [], "train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []}
+
+    for epoch in range(1, args.epochs + 1):
+        print(f"\nEpoch {epoch}/{args.epochs}")
+
+        train_loss, train_acc = train_one_epoch(model, train_loader, optimizer, criterion, device)
+        val_loss, val_acc = validate(model, val_loader, criterion, device)
+
+        print(
+            f"Train Loss: {train_loss:.4f}, Acc: {train_acc:.4f} | "
+            f"Val Loss: {val_loss:.4f}, Acc: {val_acc:.4f}"
+        )
+
+        history["epoch"].append(epoch)
+        history["train_loss"].append(train_loss)
+        history["train_acc"].append(train_acc)
+        history["val_loss"].append(val_loss)
+        history["val_acc"].append(val_acc)
+
+        # Save best checkpoint (SHEET REQUIREMENT)
+        if val_acc > best_acc:
+            best_acc = val_acc
+            save_checkpoint(
+                path=str(model_out_dir / "best.pt"),
+                model=model,
+                optimizer=optimizer,
+                epoch=epoch,
+                best_acc=best_acc,
+                extra={
+                    "model": args.model,
+                    "num_classes": num_classes,
+                    "label_to_idx": getattr(train_ds, "label_to_idx", None),
+                }
+            )
+
+    # Save history.csv (SHEET REQUIREMENT)
+    pd.DataFrame(history).to_csv(run_out_dir / "history.csv", index=False)
+
+    # Save curves.png (SHEET REQUIREMENT)
+    plt.figure(figsize=(8, 4))
+    plt.plot(history["epoch"], history["train_loss"], label="train_loss")
+    plt.plot(history["epoch"], history["val_loss"], label="val_loss")
+    plt.plot(history["epoch"], history["train_acc"], label="train_acc")
+    plt.plot(history["epoch"], history["val_acc"], label="val_acc")
+    plt.legend()
+    plt.title(f"{args.model} Training Curves")
+    plt.savefig(run_out_dir / "curves.png", dpi=150)
+    plt.close()
+
+    print("\nDONE ✅ (Train engine)")
+    print("Best Val Acc:", best_acc)
+    print("Saved best checkpoint:", model_out_dir / "best.pt")
+    print("Saved history:", run_out_dir / "history.csv")
+    print("Saved curves:", run_out_dir / "curves.png")
+    print("Saved run args:", run_out_dir / "run_args.json")
+
+
+if __name__ == "__main__":
+    main()
