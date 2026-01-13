@@ -59,7 +59,6 @@ def validate(
     device: torch.device,
 ) -> Tuple[float, float]:
     model.eval()
-
     total_loss = 0.0
     total_correct = 0
     total_samples = 0

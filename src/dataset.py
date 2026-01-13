@@ -18,7 +18,7 @@ class CSVDataset(Dataset):
 
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
-        img_path = row["path"]
+        img_path = row["path"].replace("\\", "/")
         label_str = row["label"]
         y = self.label_to_idx[label_str]
 
