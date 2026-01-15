@@ -1,35 +1,25 @@
 from torch.utils.data import DataLoader
+import torch
+
 from src.dataset import CSVDataset
 from src.transforms import get_transforms
-import pandas as pd
 
+def main():
+    train_tf, eval_tf = get_transforms(img_size=224)
 
-def get_test_loader(
-    csv_path="splits/test.csv",
-    batch_size=16,
-    num_workers=0
-):
-    # Transform cho evaluation
-    _, eval_tf = get_transforms(img_size=224)
+    train_ds = CSVDataset("splits/train.csv", transform=train_tf)
+    val_ds   = CSVDataset("splits/val.csv", transform=eval_tf)
 
-    # Đọc CSV để tạo label mapping nhất quán
-    df = pd.read_csv(csv_path)
-    labels = sorted(df["label"].unique())
-    label_to_idx = {l: i for i, l in enumerate(labels)}
+    train_loader = DataLoader(train_ds, batch_size=16, shuffle=True, num_workers=0)
+    x, y = next(iter(train_loader))
 
-    # Dataset
-    test_ds = CSVDataset(
-        csv_path=csv_path,
-        transform=eval_tf,
-        label_to_idx=label_to_idx
-    )
+    print("Batch OK")
+    print("x shape:", tuple(x.shape))  # (B, 3, 224, 224)
+    print("y shape:", tuple(y.shape))  # (B,)
+    print("x dtype:", x.dtype, "y dtype:", y.dtype)
+    print("num classes:", len(train_ds.label_to_idx))
 
-    # DataLoader
-    test_loader = DataLoader(
-        test_ds,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers
-    )
+    assert x.shape[1:] == (3, 224, 224)
 
-    return test_loader
+if __name__ == "__main__":
+    main()
