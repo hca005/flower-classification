@@ -29,6 +29,8 @@ data/processed/
 # Training artifacts (usually large)
 outputs/
 models/
+!src/models/
+!src/models/**
 
 # Kaggle downloads (optional)
 *.zip
